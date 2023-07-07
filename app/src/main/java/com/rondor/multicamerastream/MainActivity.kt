@@ -1,7 +1,6 @@
 package com.rondor.multicamerastream
 
 import android.Manifest
-import android.app.DownloadManager.Request
 import android.content.Context
 import android.content.pm.PackageManager
 import android.hardware.camera2.CameraCaptureSession
@@ -15,7 +14,9 @@ import android.os.Bundle
 import android.util.Log
 import android.view.Surface
 import android.widget.Toast
+import androidx.activity.result.ActivityResultLauncher
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.core.app.ActivityCompat
 import androidx.core.content.ContextCompat
 import com.rondor.multicamerastream.databinding.ActivityMainBinding
 import java.util.concurrent.Executor
@@ -33,6 +34,7 @@ class MainActivity : AppCompatActivity() {
 
     private val debugTag = "Robert app"
     private lateinit var binding: ActivityMainBinding
+    private lateinit var requestPermissionLauncher: ActivityResultLauncher<String>
 
     private fun findMultipleCameras(
         manager: CameraManager,
@@ -67,7 +69,10 @@ class MainActivity : AppCompatActivity() {
         return multipleCameras
     }
 
-    fun findShortLongCameraPair(manager: CameraManager, facing: Int? = null): MultipleCameras? {
+    private fun findShortLongCameraPair(
+        manager: CameraManager,
+        facing: Int? = null
+    ): MultipleCameras? {
 
         return findMultipleCameras(manager, facing).map {
             val characteristics1 = manager.getCameraCharacteristics(it.physicalId1)
@@ -110,12 +115,12 @@ class MainActivity : AppCompatActivity() {
         callback: (CameraDevice) -> Unit
     ) {
 
-        if (ContextCompat.checkSelfPermission(
+        if (ActivityCompat.checkSelfPermission(
                 this,
                 Manifest.permission.CAMERA
             ) != PackageManager.PERMISSION_GRANTED
         ) {
-            requestCameraPermission()
+            requestPermissionLauncher.launch(Manifest.permission.CAMERA)
         }
 
         cameraManager.openCamera(
@@ -136,13 +141,8 @@ class MainActivity : AppCompatActivity() {
             })
     }
 
-    fun requestCameraPermission() {
-        requestPermissions(arrayOf(Manifest.permission.CAMERA), 1)
-        return
-    }
 
-
-    fun createMultipleCameraSession(
+    private fun createMultipleCameraSession(
         cameraManager: CameraManager,
         multipleCameras: MultipleCameras,
         targets: MutableCameraOutputs,
@@ -150,18 +150,17 @@ class MainActivity : AppCompatActivity() {
         callback: (CameraCaptureSession) -> Unit
     ) {
         val outputConfigsLogical = targets.first?.map { OutputConfiguration(it) }
-        val outputConfigsPhysical1 = targets.second?.map {
+        val outputConfigsPhysical1 = targets.second.map {
             OutputConfiguration(it).apply { setPhysicalCameraId(multipleCameras.physicalId1) }
         }
-        val outputConfigsPhysical2 = targets.third?.map {
+        val outputConfigsPhysical2 = targets.third.map {
             OutputConfiguration(it).apply { setPhysicalCameraId(multipleCameras.physicalId2) }
         }
 
         //Flatten the structure of arrays of configurations
         val outputConfigsAll = arrayOf(
             outputConfigsLogical, outputConfigsPhysical1, outputConfigsPhysical2
-        )
-            .filterNotNull().flatMap { it }
+        ).filterNotNull().flatten()
 
 
         // Instantiate a session configuration that can be used to create a session
@@ -181,6 +180,31 @@ class MainActivity : AppCompatActivity() {
 
     }
 
+    private fun run(
+        manager: CameraManager,
+        outputTargets: MutableCameraOutputs,
+        surface1: Surface,
+        surface2: Surface
+    ) {
+        val multipleCameras = findShortLongCameraPair(manager)!! //Ensure this is non-null
+        createMultipleCameraSession(
+            manager,
+            multipleCameras,
+            targets = outputTargets
+        ) { session ->
+
+            val requestTemplate = CameraDevice.TEMPLATE_PREVIEW
+            Log.i(debugTag, "TEMPLATE PREVIEW created")
+            val captureRequest =
+                session.device.createCaptureRequest(requestTemplate).apply {
+                    arrayOf(surface1, surface2).forEach { addTarget(it) }
+                }.build()
+
+            // Set the sticky request for the session and you are done
+            session.setRepeatingRequest(captureRequest, null, null)
+        }
+    }
+
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -188,10 +212,21 @@ class MainActivity : AppCompatActivity() {
         binding = ActivityMainBinding.inflate(layoutInflater)
         setContentView(binding.root)
 
+        val manager = getSystemService(Context.CAMERA_SERVICE) as CameraManager
+        val surface1 = binding.surfaceView5.holder.surface
+        val surface2 = binding.surfaceView6.holder.surface
+
+        val outputTargets = MutableCameraOutputs(
+            null,
+            mutableListOf(surface1),
+            mutableListOf(surface2)
+        )
+
         val requestPermissionLauncher =
             registerForActivityResult(ActivityResultContracts.RequestPermission()) { isGranted: Boolean ->
                 if (isGranted) {
                     Toast.makeText(this, "Camera permission granted", Toast.LENGTH_SHORT).show()
+                    run(manager, outputTargets, surface1, surface2)
                 } else {
                     Toast.makeText(this, "Camera permission not granted", Toast.LENGTH_SHORT).show()
                 }
@@ -199,44 +234,13 @@ class MainActivity : AppCompatActivity() {
 
         if (ContextCompat.checkSelfPermission(
                 this,
-                android.Manifest.permission.CAMERA
+                Manifest.permission.CAMERA
             ) != PackageManager.PERMISSION_GRANTED
         ) {
-            requestPermissionLauncher.launch(android.Manifest.permission.CAMERA)
+            requestPermissionLauncher.launch(Manifest.permission.CAMERA)
         } else {
-            val manager = getSystemService(Context.CAMERA_SERVICE) as CameraManager
-            val surface1 = binding.surfaceView5.holder.surface
-            val surface2 = binding.surfaceView6.holder.surface
-
-            val outputTargets = MutableCameraOutputs(
-                null,
-                mutableListOf<Surface>(surface1),
-                mutableListOf<Surface>(surface2)
-            )
-
-
-            val multipleCameras = findShortLongCameraPair(manager)!! //Ensure this is non-null
-            createMultipleCameraSession(
-                manager,
-                multipleCameras,
-                targets = outputTargets
-            ) { session ->
-
-                val requestTemplate = CameraDevice.TEMPLATE_PREVIEW
-                Log.i(debugTag, "TEMPLATE PREVIEW created")
-                val captureRequest =
-                    session.device.createCaptureRequest(requestTemplate).apply {
-                        arrayOf(surface1, surface2).forEach { addTarget(it) }
-                    }.build()
-                Log.i(debugTag, "CAPTURE request done")
-
-                // Set the sticky request for the session and you are done
-                Log.i(debugTag, "Repeating session")
-                session.setRepeatingRequest(captureRequest, null, null)
-            }
+            run(manager, outputTargets, surface1, surface2)
         }
-
-
     }
 
 }
